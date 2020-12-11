@@ -1,0 +1,44 @@
+diff --git a/libraries/3rdparty/opus/src/opus_decoder.c b/libraries/3rdparty/opus/src/opus_decoder.c
+index 9113638..4b6a05e 100644
+--- a/libraries/3rdparty/opus/src/opus_decoder.c
++++ b/libraries/3rdparty/opus/src/opus_decoder.c
+@@ -42,7 +42,6 @@
+ #include "opus.h"
+ #include "entdec.h"
+ #include "modes.h"
+-#include "API.h"
+ #include "stack_alloc.h"
+ #include "float_cast.h"
+ #include "opus_private.h"
+@@ -52,6 +51,9 @@
+ #include "mathops.h"
+ #include "cpu_support.h"
+ 
++/* Explicitly include ../silk/API.h as lwip library contains api.h which gets wrongly included in Windows. */
++#include "../silk/API.h"
++
+ struct OpusDecoder {
+    int          celt_dec_offset;
+    int          silk_dec_offset;
+diff --git a/libraries/3rdparty/opus/src/opus_encoder.c b/libraries/3rdparty/opus/src/opus_encoder.c
+index e98ac5b..b6650b1 100644
+--- a/libraries/3rdparty/opus/src/opus_encoder.c
++++ b/libraries/3rdparty/opus/src/opus_encoder.c
+@@ -33,7 +33,6 @@
+ #include "celt.h"
+ #include "entenc.h"
+ #include "modes.h"
+-#include "API.h"
+ #include "stack_alloc.h"
+ #include "float_cast.h"
+ #include "opus.h"
+@@ -51,6 +50,9 @@
+ #include "float/structs_FLP.h"
+ #endif
+ 
++/* Explicitly include ../silk/API.h as lwip library contains api.h which gets wrongly included in Windows. */
++#include "../silk/API.h"
++
+ #define MAX_ENCODER_BUFFER 480
+ 
+ #ifndef DISABLE_FLOAT_API

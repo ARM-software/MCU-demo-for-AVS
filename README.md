@@ -59,7 +59,15 @@ Build the project and program the board, you should be able to run the demo.
 You are able to see logs from the console if you have set up the UART correctly as described in the **Hardware setup** section. You will see the device connect to your MQTT endpoint and AIA service if things go well, and the device will wait in IDLE state for your action. You can also tell the status of the device from the user LED on the board if you do not have a UART connection. The LED will start blinking after the MQTT connection is established and stay on after entering IDLE state. You can now tap the capsense button BTN1 in the bottom right corner to start a conversion with AIA.
 
 ## Known issues
-The lwIP library includes a header file 'api.h', while the Opus library includes 'API.h'. It's not an issue on Linux hosts. However, since Windows is case insensitive in terms of file systems, the user needs to specify the path of these two header files in the source files that include them, to ensure the correct one is included.
+- The lwIP library includes a header file 'api.h', while the Opus library includes 'API.h'. It's not an issue on Linux hosts. However, since Windows and macOS(by default) are case insensitive in terms of file systems, the user needs to specify the path of these two header files in the source files that include them, to ensure the correct one is included.
+Please apply `opus_WINDOWS_MAC.patch` in `patch/` folder in this repository if you are a Windows or macOS user.
+- The default GCC compiler used by the Cypress amazon-freertos project is gcc-7.2.1 under ModusToolbox installation location. If the compiler path does not match that installed by your ModusToolbox IDE, you might fail to build the project. For example, for macOS users, you might encounter the following build error with ModusToolbox 2.2.0:
+    ```
+    make: /Applications/ModusToolbox/tools_2.2/gcc-7.2.1/bin/arm-none-eabi-gcc: No such file or directory
+    ```
+  In such case, please specify the correct gcc path by either:
+  - setting CY_COMPILER_DEFAULT_DIR in `vendors/cypress/psoc6/psoc6make/make/core/main.mk`.
+  - setting CY_COMPILER_DIR and CY_COMPILER_GCC_ARM_DIR in `projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/Makefile`.
 
 # License
 
