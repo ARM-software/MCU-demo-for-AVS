@@ -12,10 +12,11 @@
  .../aws_demos/config_files/FreeRTOSConfig.h        |  108 +-
  .../aws_demos/config_files/aws_demo_config.h       |    2 +-
  .../aws_demos/config_files/iot_config.h            |    5 +-
- 14 files changed, 3041 insertions(+), 2398 deletions(-)
+ .../cypress/psoc6/common/cybsp_serial_flash_prog.c |    3 +-
+ 15 files changed, 3043 insertions(+), 2399 deletions(-)
 
 diff --git a/demos/include/iot_demo_runner.h b/demos/include/iot_demo_runner.h
-index 81a4859..9a576e5 100644
+index 81a4859f..9a576e5d 100644
 --- a/demos/include/iot_demo_runner.h
 +++ b/demos/include/iot_demo_runner.h
 @@ -98,6 +98,16 @@
@@ -36,7 +37,7 @@ index 81a4859..9a576e5 100644
  /* if no demo was defined there will be no entry point defined and we will not be able to run the demo */
      #error "No demo to run. One demo should be enabled"
 diff --git a/libraries/3rdparty/mbedtls/include/mbedtls/config.h b/libraries/3rdparty/mbedtls/include/mbedtls/config.h
-index f80822f..b2e67bf 100644
+index f80822f2..b2e67bf8 100644
 --- a/libraries/3rdparty/mbedtls/include/mbedtls/config.h
 +++ b/libraries/3rdparty/mbedtls/include/mbedtls/config.h
 @@ -705,7 +705,7 @@
@@ -49,7 +50,7 @@ index f80822f..b2e67bf 100644
  
  /**
 diff --git a/projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/.cproject b/projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/.cproject
-index 53e2caf..1a67702 100644
+index 53e2caf8..1a677026 100644
 --- a/projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/.cproject
 +++ b/projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/.cproject
 @@ -17,33 +17,34 @@
@@ -250,7 +251,7 @@ index 53e2caf..1a67702 100644
 +	<storageModule moduleId="org.eclipse.cdt.make.core.buildtargets"/>
  </cproject>
 diff --git a/projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/.project b/projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/.project
-index 17a3b6e..a574e24 100644
+index 17a3b6e4..a574e249 100644
 --- a/projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/.project
 +++ b/projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/.project
 @@ -26,2841 +26,2850 @@
@@ -4741,7 +4742,7 @@ index 17a3b6e..a574e24 100644
  	</linkedResources>
  </projectDescription>
 diff --git a/projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/Makefile b/projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/Makefile
-index c24d56a..cc9ccf1 100644
+index c24d56a7..cc9ccf11 100644
 --- a/projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/Makefile
 +++ b/projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/Makefile
 @@ -93,10 +93,11 @@ SOURCES=
@@ -4759,7 +4760,7 @@ index c24d56a..cc9ccf1 100644
  # Additional / custom C compiler flags.
  #
 diff --git a/projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/afr.mk b/projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/afr.mk
-index 5bd2b62..bc9a633 100644
+index 5bd2b62c..bc9a6330 100644
 --- a/projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/afr.mk
 +++ b/projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/afr.mk
 @@ -69,7 +69,9 @@ CY_AFR_BOARD_APP_PATH=$(CY_AFR_BOARD_PATH)/$(CY_AFR_BUILD)/application_code/cy_c
@@ -4829,7 +4830,7 @@ index 5bd2b62..bc9a633 100644
  
  ################################################################################
 diff --git a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/cy_code/cybsp.c b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/cy_code/cybsp.c
-index f460f83..0af7ca5 100644
+index f460f83a..0af7ca57 100644
 --- a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/cy_code/cybsp.c
 +++ b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/cy_code/cybsp.c
 @@ -77,7 +77,8 @@ cy_rslt_t cybsp_init(void)
@@ -4854,7 +4855,7 @@ index f460f83..0af7ca5 100644
      if (CY_RSLT_SUCCESS == result)
      {
 diff --git a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/cy_code/cybsp_types.h b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/cy_code/cybsp_types.h
-index a99626c..97a9e57 100644
+index a99626c4..97a9e57c 100644
 --- a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/cy_code/cybsp_types.h
 +++ b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/cy_code/cybsp_types.h
 @@ -77,11 +77,11 @@ extern "C" {
@@ -4874,7 +4875,7 @@ index a99626c..97a9e57 100644
  /** Pin: I2C SCL */
  #define CYBSP_I2C_SCL          P6_0
 diff --git a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/cy_code/design.cycapsense b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/cy_code/design.cycapsense
-index 239c647..abc8ebc 100644
+index 239c647b..abc8ebcc 100644
 --- a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/cy_code/design.cycapsense
 +++ b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/cy_code/design.cycapsense
 @@ -1,13 +1,6 @@
@@ -5022,10 +5023,10 @@ index 239c647..abc8ebc 100644
 +    </Widgets>
  </Configuration>
 diff --git a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/cy_code/design.modus b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/cy_code/design.modus
-index 586b4c9..128816f 100644
+index 586b4c99..128816f3 100644
 --- a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/cy_code/design.modus
 +++ b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/cy_code/design.modus
-@@ -1,579 +1,1051 @@
+@@ -1,578 +1,1050 @@
  <?xml version="1.0" encoding="UTF-8"?>
 -<Design version="11" device_library_hint_path="../../psoc6pdl/devicesupport.xml" xmlns="http://cypress.com/xsd/cydesignfile_v2">
 +<Design version="12" device_library_hint_path="../../psoc6pdl/devicesupport.xml" xmlns="http://cypress.com/xsd/cydesignfile_v3">
@@ -6607,7 +6608,7 @@ index 586b4c9..128816f 100644
                  </Block>
              </BlockConfig>
              <Netlist>
-                 <Net>
++                <Net>
 +                    <Port name="audioss[0].i2s[0].clock[0]"/>
 +                    <Port name="audioss[0].pdm[0].clock[0]"/>
 +                    <Port name="srss[0].clock[0].hfclk[1].root_clk[0]"/>
@@ -6640,51 +6641,51 @@ index 586b4c9..128816f 100644
 +                    <Port name="audioss[0].pdm[0].tr_pdm_rx_req[0]"/>
 +                    <Port name="cpuss[0].dw1[0].chan[26].tr_in[0]"/>
 +                </Net>
-+                <Net>
+                 <Net>
                      <Port name="cpuss[0].dap[0].swj_swclk_tclk[0]"/>
                      <Port name="ioss[0].port[6].pin[7].digital_in[0]"/>
-                 </Net>
-@@ -598,6 +1070,10 @@
+@@ -597,6 +1069,10 @@
+                     <Port name="ioss[0].port[0].pin[1].analog[0]"/>
                      <Port name="srss[0].clock[0].wco[0].wco_out[0]"/>
                  </Net>
-                 <Net>
++                <Net>
 +                    <Port name="ioss[0].port[0].pin[5].digital_out[0]"/>
 +                    <Port name="srss[0].clock[0].hfclk[5].root_clk[0]"/>
 +                </Net>
-+                <Net>
+                 <Net>
                      <Port name="ioss[0].port[3].pin[0].digital_inout[0]"/>
                      <Port name="scb[2].uart_rx[0]"/>
-                 </Net>
-@@ -650,6 +1126,10 @@
+@@ -649,6 +1125,10 @@
+                     <Port name="peri[0].div_8[1].clk[0]"/>
                      <Port name="scb[3].clock[0]"/>
                  </Net>
-                 <Net>
++                <Net>
 +                    <Port name="peri[0].div_8[2].clk[0]"/>
 +                    <Port name="tcpwm[1].cnt[1].clock[0]"/>
 +                </Net>
-+                <Net>
+                 <Net>
                      <Port name="peri[0].div_8[3].clk[0]"/>
                      <Port name="scb[2].clock[0]"/>
-                 </Net>
-@@ -663,41 +1143,17 @@
+@@ -662,42 +1142,18 @@
+                     <Port name="srss[0].clock[0].hfclk[2].root_clk[0]"/>
                  </Net>
                  <Mux name="sense" location="csd[0].csd[0]">
-                     <Arm>
+-                    <Arm>
 -                        <Port name="ioss[0].port[7].pin[7].analog[0]"/>
 -                    </Arm>
--                    <Arm>
+                     <Arm>
                          <Port name="ioss[0].port[7].pin[1].analog[0]"/>
                      </Arm>
                      <Arm>
                          <Port name="ioss[0].port[7].pin[2].analog[0]"/>
                      </Arm>
-                     <Arm>
+-                    <Arm>
 -                        <Port name="ioss[0].port[8].pin[1].analog[0]"/>
 -                    </Arm>
 -                    <Arm>
 -                        <Port name="ioss[0].port[1].pin[0].analog[0]"/>
 -                    </Arm>
--                    <Arm>
+                     <Arm>
                          <Port name="ioss[0].port[8].pin[2].analog[0]"/>
                      </Arm>
                      <Arm>
@@ -6709,7 +6710,7 @@ index 586b4c9..128816f 100644
              </Netlist>
          </Device>
 diff --git a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/main.c b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/main.c
-index 73fb015..6967d23 100644
+index 73fb0150..6967d23b 100644
 --- a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/main.c
 +++ b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/application_code/main.c
 @@ -52,8 +52,9 @@
@@ -6880,7 +6881,7 @@ index 73fb015..6967d23 100644
  /*-----------------------------------------------------------*/
  
 diff --git a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/config_files/FreeRTOSConfig.h b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/config_files/FreeRTOSConfig.h
-index 9009659..9a873b3 100644
+index 9009659a..9a873b38 100644
 --- a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/config_files/FreeRTOSConfig.h
 +++ b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/config_files/FreeRTOSConfig.h
 @@ -55,6 +55,12 @@ extern uint32_t SystemCoreClock;
@@ -7049,7 +7050,7 @@ index 9009659..9a873b3 100644
  /* Definitions that map the FreeRTOS port interrupt handlers to their CMSIS
  standard names. */
 diff --git a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/config_files/aws_demo_config.h b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/config_files/aws_demo_config.h
-index 2ef799b..d3b944b 100644
+index 2ef799b0..d3b944bb 100644
 --- a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/config_files/aws_demo_config.h
 +++ b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/config_files/aws_demo_config.h
 @@ -39,7 +39,7 @@
@@ -7062,7 +7063,7 @@ index 2ef799b..d3b944b 100644
  /* Default configuration for all demos. Individual demos can override these below */
  #define democonfigDEMO_STACKSIZE    ( configMINIMAL_STACK_SIZE * 8 )
 diff --git a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/config_files/iot_config.h b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/config_files/iot_config.h
-index 9a5ff97..ef8ca04 100644
+index 9a5ff97e..ef8ca040 100644
 --- a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/config_files/iot_config.h
 +++ b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/config_files/iot_config.h
 @@ -49,8 +49,11 @@
@@ -7078,3 +7079,17 @@ index 9a5ff97..ef8ca04 100644
  
  #define IOT_MQTT_ENABLE_SERIALIZER_OVERRIDES    1
  
+diff --git a/vendors/cypress/psoc6/common/cybsp_serial_flash_prog.c b/vendors/cypress/psoc6/common/cybsp_serial_flash_prog.c
+index 1948adcd..04861c38 100644
+--- a/vendors/cypress/psoc6/common/cybsp_serial_flash_prog.c
++++ b/vendors/cypress/psoc6/common/cybsp_serial_flash_prog.c
+@@ -81,7 +81,8 @@ const uint32_t cyToc[128] =
+     0,                      /* Offset=0x0008: Key Storage Address */
+     (int)&smifIpBlocksArr,  /* Offset=0x000C: This points to a null terminated array of SMIF structures. */
+     0x10000000u,            /* Offset=0x0010: App image start address */
+-    [127] =  0x0B1F0000     /* Offset=0x01FC: CRC16-CCITT (the upper 2 bytes contain the CRC and the lower 2 bytes are 0) */
++    [126] =  0x000000C2,    /* Offset=0x01F8: Flash boot parameters */
++    [127] =  0x55D30000     /* Offset=0x01FC: CRC16-CCITT (the upper 2 bytes contain the CRC and the lower 2 bytes are 0) */
+ };
+ 
+ /** \} group_bsp_serial_flash_variables */

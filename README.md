@@ -31,7 +31,8 @@ After you have tweaked your board, plug a USB cable into the KitProg3 USB connec
     ```
     tar zxvf opus-1.3.1.tar.gz --one-top-level=libraries/3rdparty/opus --strip-components 1
     ```
- 5. Apply `patch/CY8CPROTO-062-4343W.patch` from the top-level folder.
+ 5. Apply `patch/CY8CPROTO-062-4343W.patch` from the top-level folder. This patch contains necessary changes to the project to run the AIA demo. Importantly, the BSP in the amazon-freertos 201908.00 release clears the TOC2_FLAGS register in SFlash and disables SWJ pins if the MCU is programmed with SFlash area programming allowed. As a result, the Cypress board will be unable to reprogram with KitProg3. This patch includes the fix for this issue by setting TOC2_FLAGS to the correct value. DO NOT directly program this release into your board without applying the patch unless you have prohibited SFlash Erase/Program in debugger configurations. If you are unable to reprogram your board, please contact your board provider.
+
  6. Open [ModusToolbox IDE](https://www.cypress.com/products/modustoolbox-software-environment), import the project from `projects/cypress/CY8CPROTO_062_4343W/mtb/aws_demos/`
  7. Launch the Device Configurator from the Quick Panel in ModusToolbox, do nothing but save and exit. This is for the Device Configurator to automatically generate platform configuration source code based on the design.modus and design.cycapsense files we made for this demo.
  8. Fill in your credentials information. See the next section **Credentials**.
