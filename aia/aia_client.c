@@ -27,16 +27,14 @@
 #include <stdbool.h>
 
 #include "aia_client_priv.h"
-#include "aia_platform.h"
-#include "jsmn.h"
 
 TaskHandle_t xDemoTaskHandle;
 
 static AIAClient_t AIAClient;
 
-static uint8_t ucAiaRecvMsg[ aiaconfigAIA_MESSAGE_MAX_SIZE ];
+static uint8_t ucAiaRecvMsg[ aiaconfigAIA_MESSAGE_MAX_SIZE ] __attribute__((aligned(4)));
 
-static uint8_t ucDecodeTaskTemp[ aiaconfigAIA_MESSAGE_MAX_SIZE ];
+static uint8_t ucDecodeTaskTemp[ aiaconfigAIA_MESSAGE_MAX_SIZE ] __attribute__((aligned(4)));
 
 static AIAClient_Resequence_t xReseqBuffer;
 
@@ -46,6 +44,7 @@ static AIACryptoKeys_t xKeys = {
         .peer_public_key = aiaconfigPEER_PUBLIC_KEY,
 };
 
+/* Workaround use. */
 static bool bBufferOverrun = false;
 static bool bMicrophoneOpenedDuringOverrun = false;
 static bool bSendMicrophoneOpenedEvent = false;
@@ -59,13 +58,55 @@ static BaseType_t prvClientSetStateFromISR( BaseType_t xState, BaseType_t *pxHig
 static BaseType_t prvClientClearState( BaseType_t xState );
 static BaseType_t prvClientGetState( BaseType_t xState );
 static BaseType_t prvClientWaitForState( BaseType_t xState, BaseType_t xClearOnExit, BaseType_t xWaitForAllStates, TickType_t xTicksToWait );
+static BaseType_t prvClientPublishMessage( const char * pcTopic, const void * pvData, uint32_t ulLen );
 static BaseType_t prvClientDisconnectFromAIA( void );
 static BaseType_t prvClientOpenMicrophone( void );
 static BaseType_t prvClientOpenMicrophoneFromISR( BaseType_t * pxHigherPriorityTaskWoken );
+static BaseType_t prvClientCloseMicrophone( void );
 static BaseType_t prvClientOpenSpeaker( uint64_t ullOpenOffset );
 static BaseType_t prvClientCloseSpeaker( uint64_t ullCloseOffset );
+static BaseType_t prvClientReconnectToAIA( void );
+static BaseType_t prvClientPublishCapabilities( void );
+static BaseType_t prvClientSynchronizeState( void );
 static BaseType_t prvClientSetVolume( AIAClient_SetVolume_t xSetVolume );
+static BaseType_t prvClientSendMarker( uint32_t ulMarker );
 static BaseType_t prvClientBufferStateChanged( AIABufferStateChanged_t xBufferStateChanged );
+
+static void prvClientHandleTopicConnectionService( const uint8_t * pucMessage, uint32_t ulMessageLength );
+static void prvClientHandleTopicSpeaker( const uint8_t * pucMessage, uint32_t ulMessageLength );
+static void prvClientHandleTopicCapabilitiesAck( const uint8_t * pucMessage, uint32_t ulMessageLength );
+static void prvClientHandleTopicDirective( const uint8_t * pucMessage, uint32_t ulMessageLength );
+
+static void prvClientHandleDirectiveSetAttentionState( const uint8_t * pucMessage,
+                                                       const jsmntok_t * pxJSMNToken,
+                                                       const jsmntok_t * pxJSMNTokenEndMarker,
+                                                       uint8_t * pucDirectiveTokenSize );
+
+static void prvClientHandleDirectiveOpenSpeaker( const uint8_t * pucMessage,
+                                                 const jsmntok_t * pxJSMNToken,
+                                                 const jsmntok_t * pxJSMNTokenEndMarker,
+                                                 uint8_t * pucDirectiveTokenSize );
+
+static void prvClientHandleDirectiveCloseSpeaker( const uint8_t * pucMessage,
+                                                  const jsmntok_t * pxJSMNToken,
+                                                  const jsmntok_t * pxJSMNTokenEndMarker,
+                                                  uint8_t * pucDirectiveTokenSize );
+
+static void prvClientHandleDirectiveOpenMicrophone( const uint8_t * pucMessage,
+                                                    const jsmntok_t * pxJSMNToken,
+                                                    const jsmntok_t * pxJSMNTokenEndMarker,
+                                                    uint8_t * pucDirectiveTokenSize );
+
+static void prvClientHandleDirectiveCloseMicrophone( const uint8_t * pucMessage,
+                                                     const jsmntok_t * pxJSMNToken,
+                                                     const jsmntok_t * pxJSMNTokenEndMarker,
+                                                     uint8_t * pucDirectiveTokenSize );
+
+static void prvClientHandleDirectiveSetVolume( const uint8_t * pucMessage,
+                                               const jsmntok_t * pxJSMNToken,
+                                               const jsmntok_t * pxJSMNTokenEndMarker,
+                                               uint8_t * pucDirectiveTokenSize );
+
 static void prvAIAStreamMicrophoneTask( void * pvParameters );
 static void prvAIASpeakerTask( void * pvParameters );
 
@@ -120,7 +161,7 @@ static BaseType_t prvClientWaitForState( BaseType_t xState, BaseType_t xClearOnE
                                 xTicksToWait );
 }
 
-BaseType_t prvClientPublishMessage( const char * pcTopic, const void * pvData, uint32_t ulLen )
+static BaseType_t prvClientPublishMessage( const char * pcTopic, const void * pvData, uint32_t ulLen )
 {
     BaseType_t xReturned = pdPASS;
     IotMqttError_t xMqttStatus = IOT_MQTT_STATUS_PENDING;
@@ -151,31 +192,531 @@ BaseType_t prvClientPublishMessage( const char * pcTopic, const void * pvData, u
     return xReturned;
 }
 
-/* JSON string is not null-terminated, thus must first append a NULL character before printing. */
-static void prvPrintJSONString( const char * description, const uint8_t * js, int start, int end )
+static void prvClientHandleTopicConnectionService( const uint8_t * pucMessage, uint32_t ulMessageLength )
 {
-    char * s = ( char * )pvPortMalloc( end - start + 1 );
+    jsmntok_t xJSMNTokens[ aiaconfigJSMN_MAX_TOKENS ];
+    jsmntok_t * pxJSMNToken;
+    int32_t lNbTokens;
 
-    if( s != NULL )
+    configPRINTF_DEBUG( ( "DEBUG: /connection/fromservice msg length %d\r\n", ulMessageLength ) );
+    lNbTokens = lParseJSMN( ( const char * )pucMessage, ulMessageLength, xJSMNTokens, aiaconfigJSMN_MAX_TOKENS );
+    configASSERT( lNbTokens >= 0 );
+
+    printJSONString_DEBUG( ( "DEBUG: RAW JSON message: ", pucMessage, 0, ulMessageLength ) );
+
+    /* Acknowledge and disconnect messages are both published to this topic. */
+    pxJSMNToken = &xJSMNTokens[ AIA_MSGTOKENPOS_CONNECTION_NAME ];
+    configASSERT( AIA_MSGTOKENPOS_CONNECTION_NAME < lNbTokens );
+    if( xIsStringEqual( pucMessage + pxJSMNToken->start, pxJSMNToken->end - pxJSMNToken->start, "Acknowledge" ) == pdTRUE )
     {
-        memcpy( s, js + start, end - start );
-        s[ end - start ] = 0;
-        configPRINTF( ( "%s%s\r\n", description, s ) );
-        vPortFree( s );
+        pxJSMNToken = &xJSMNTokens[ AIA_MSGTOKENPOS_CONNECTION_CODE ];
+        configASSERT( AIA_MSGTOKENPOS_CONNECTION_CODE < lNbTokens );
+        if( xIsStringEqual( pucMessage + pxJSMNToken->start, pxJSMNToken->end - pxJSMNToken->start, "CONNECTION_ESTABLISHED" ) == pdTRUE )
+        {
+            configPRINTF( ( "AIA service is connected!\r\n" ) );
+            prvClientSetState( AIA_STATE_CONNECTED );
+        }
+        else
+        {
+            vPrintJSONString( "Failed to connect to AIA service. Code: ", pucMessage, pxJSMNToken->start, pxJSMNToken->end );
+            prvClientSetState( AIA_STATE_CONNECTION_DENIED );
+        }
+    }
+    else if( xIsStringEqual( pucMessage + pxJSMNToken->start, pxJSMNToken->end - pxJSMNToken->start, "Disconnect" ) == pdTRUE )
+    {
+        /* Ignore the message if the client is not connected. */
+        if( prvClientGetState( AIA_STATE_CONNECTED ) == pdTRUE )
+        {
+            pxJSMNToken = &xJSMNTokens[ AIA_MSGTOKENPOS_DISCONNECTION_CODE ];
+            configASSERT( AIA_MSGTOKENPOS_DISCONNECTION_CODE < lNbTokens );
+            vPrintJSONString( "Disconnect from AIA service! Code: ", pucMessage, pxJSMNToken->start, pxJSMNToken->end );
+            prvClientClearState( AIA_STATE_CONNECTED );
+            prvClientDisconnectFromAIA();
+            /* Signal the demo task. */
+            if( xDemoTaskHandle != NULL )
+            {
+                xTaskNotifyGive( xDemoTaskHandle );
+            }
+        }
     }
 }
 
-static uint64_t prvConvertJSONLong( const uint8_t * js, int start, int end )
+static void prvClientHandleTopicSpeaker( const uint8_t * pucMessage, uint32_t ulMessageLength )
 {
-    uint64_t num = 0;
-    for( ; start < end; start++ )
+    AIAClient_Speaker_t * pxSpeaker = &AIAClient.xSpeaker;
+    uint32_t ulSequence = *( uint32_t * )pucMessage;
+    size_t xBytesRemainedBefore;
+    static uint32_t ulNextExpectedSeq;
+
+    configPRINTF_DEBUG( ( "DEBUG: /speaker msg length %d seq %u\r\n", ulMessageLength, ulSequence ) );
+
+    if( ulSequence < ulNextExpectedSeq )
     {
-        num = num * 10 + *( js + start ) - '0';
+        /* Skip the message of a smaller sequence number than expected.
+         * This is actually not consistent with AIA spec, which requires to replace
+         * the old message if a message with the same sequence number is received
+         * twice. In our current implementation using message buffer there's no way
+         * to arbitrarily replace data in the buffer.
+         * So far observation shows that the only circumstance that duplicate sequence
+         * messages are received is when overrun happens. Messages start with the sequence
+         * number specified in the event message will be resent by the server. And since
+         * the overrun event message won't take effect immediately, we will still receive
+         * messages before the server starts resending. Those which are within our
+         * resequencing range will be put into the resequencing buffer and pushed into
+         * the speaker buffer immediately following the expected message is resent and
+         * pushed.
+         * Sadly we cannot skip messages until the overrun message is received,because
+         * it can also happen that the resent messages are still out of order:)
+         * e.g.
+         *      Buffer overruns at: 42
+         *      Resequencing buffer size: 4
+         *                                               these 4 are ignored as they have been sent before
+         *                                                                  ^
+         *                                                             _____|______
+         *                                                             |    |  |  |
+         *      Message received on /speaker: 40 41 42 43 44 45 46 47 43 42 44 45 46 47 ...
+         *                                           ^                  ^
+         *                                           |                  |
+         *                            overrun message sent      43 is resent before 42
+         */
     }
-    return num;
+    else if( ulSequence > ulNextExpectedSeq )
+    {
+        if( ulSequence > ulNextExpectedSeq + aiaconfigAIA_SPEAKER_RESEQUENCING )
+        {
+            if( bBufferOverrun == false )
+            {
+                configPRINTF_DEBUG( ( "DEBUG: Unexpected sequence %u goes out of range while expecting %u!\r\n", ulSequence, ulNextExpectedSeq ) );
+                prvClientDisconnectFromAIA();
+                /* Signal the demo task. */
+                if( xDemoTaskHandle != NULL )
+                {
+                    xTaskNotifyGive( xDemoTaskHandle );
+                }
+            }
+        }
+        else
+        {
+            uint8_t ucIndex;
+
+            /* Calculate where the message should be put in the resequencing buffer. */
+            ucIndex = ( ulSequence - ulNextExpectedSeq - 1 + xReseqBuffer.ucStartIndex ) % aiaconfigAIA_SPEAKER_RESEQUENCING;
+            memcpy( xReseqBuffer.xMessage[ ucIndex ].ucBuffer, ucAiaRecvMsg, ulMessageLength );
+            xReseqBuffer.xMessage[ ucIndex ].ulLen = ulMessageLength;
+        }
+    }
+    else
+    {
+        void * pvData;
+        size_t xDataLen;
+        bool bContinue;
+        AIABufferStateChanged_t xBufferStateChanged;
+
+        if( bBufferOverrun == true )
+        {
+            bBufferOverrun = false;
+
+            /* If microphone was opened during overrun state, which is the case when media playback
+             * is interrupted by a new user request, drop the messages in the resequence buffer as
+             * messages of the same sequence number but different contents will be sent by the server.
+             */
+            if( bMicrophoneOpenedDuringOverrun == true )
+            {
+                bMicrophoneOpenedDuringOverrun = false;
+                for( int i = 0; i < aiaconfigAIA_SPEAKER_RESEQUENCING; i++ )
+                {
+                   xReseqBuffer.xMessage[ i ].ulLen = 0;
+                }
+            }
+        }
+
+        pvData = ( void * )ucAiaRecvMsg;
+        xDataLen = ulMessageLength;
+
+        do
+        {
+            bContinue = false;
+
+            xBytesRemainedBefore = xStreamBufferBytesAvailable( ( StreamBufferHandle_t )pxSpeaker->xSpeakerBuffer );
+            if( xMessageBufferSend( pxSpeaker->xSpeakerBuffer, pvData, xDataLen, pdMS_TO_TICKS( 100 ) ) == 0 )
+            {
+                /* According to the spec, overrun event should only be sent when the speaker is opened. If it's
+                 * closed, new data should be added to the buffer and old data dropped if the buffer runs out.
+                 * It is not handled accordingly here, as it requires extra logic but is only a corner case which
+                 * barely happens.
+                 */
+                configPRINTF_DEBUG( ( "DEBUG: Speaker buffer overruns!\r\n" ) );
+                bBufferOverrun = true;
+
+                if( prvClientGetState( AIA_STATE_MICROPHONE_OPENED ) == pdTRUE )
+                {
+                    bMicrophoneOpenedDuringOverrun = true;
+                }
+
+                /* Reset the resequence buffer as the following messages will be resent by AIA. */
+                for( int i = 0; i < aiaconfigAIA_SPEAKER_RESEQUENCING; i++ )
+                {
+                    xReseqBuffer.xMessage[ i ].ulLen = 0;
+                }
+
+                xBufferStateChanged.ulSequence = ulNextExpectedSeq;
+                xBufferStateChanged.pcBufferStateStr = "OVERRUN";
+
+                /* Only send this event while speaker is open. In case it is not, discard old data. */
+                vTaskSuspendAll();
+
+                if( prvClientGetState( AIA_STATE_SPEAKER_OPENED ) == pdTRUE )
+                {
+                    xTaskResumeAll();
+                    prvClientBufferStateChanged( xBufferStateChanged );
+                }
+                else
+                {
+                    do
+                    {
+                        xMessageBufferReceive( pxSpeaker->xSpeakerBuffer, ucDecodeTaskTemp, sizeof( ucDecodeTaskTemp ), 0 );
+                    } while( xMessageBufferSend( pxSpeaker->xSpeakerBuffer, pvData, xDataLen, 0 ) == 0 );
+                    ulNextExpectedSeq++;
+                    xTaskResumeAll();
+                }
+
+            }
+            else
+            {
+                /* Send the overrun warning only when speaker is still opened and
+                 * the buffer goes from a good state to a warning state.
+                 */
+                if( prvClientGetState( AIA_STATE_SPEAKER_OPENED ) == pdTRUE &&
+                    xBytesRemainedBefore < pxSpeaker->ulSpeakerBufferOverrunWarning &&
+                    xStreamBufferBytesAvailable( ( StreamBufferHandle_t )pxSpeaker->xSpeakerBuffer ) >= pxSpeaker->ulSpeakerBufferOverrunWarning )
+                {
+                    xBufferStateChanged.ulSequence = ulSequence;
+                    xBufferStateChanged.pcBufferStateStr = "OVERRUN_WARNING";
+                    prvClientBufferStateChanged( xBufferStateChanged );
+                }
+
+                /* If the next slot in the resequencing buffer has valid data,
+                 * prepare to push it to the speaker buffer.
+                 */
+                uint8_t ucNextIndex = xReseqBuffer.ucStartIndex;
+                if( xReseqBuffer.xMessage[ ucNextIndex ].ulLen != 0 )
+                {
+                    pvData = xReseqBuffer.xMessage[ ucNextIndex ].ucBuffer;
+                    xDataLen = xReseqBuffer.xMessage[ ucNextIndex ].ulLen;
+                    xReseqBuffer.xMessage[ ucNextIndex ].ulLen = 0;
+                    bContinue = true;
+                }
+
+                xReseqBuffer.ucStartIndex = ( ucNextIndex + 1 ) % aiaconfigAIA_SPEAKER_RESEQUENCING;
+                ulNextExpectedSeq++;
+            }
+        } while( bContinue );
+    }
+
+    return;
 }
 
-static void prvAIAGeneralCallback( void * pvUserData, IotMqttCallbackParam_t * pxPublishParameters )
+static void prvClientHandleTopicCapabilitiesAck( const uint8_t * pucMessage, uint32_t ulMessageLength )
+{
+    uint32_t ulSequence = *( uint32_t * )pucMessage;
+    jsmntok_t xJSMNTokens[ aiaconfigJSMN_MAX_TOKENS ];
+    jsmntok_t * pxJSMNToken;
+    int32_t lNbTokens;
+
+    configPRINTF_DEBUG( ( "DEBUG: /capabilities/acknowledge msg length %d seq %u\r\n", ulMessageLength, ulSequence ) );
+
+    /* Sequence number is not handled for /capabilities. */
+    pucMessage += AIA_MSG_PARAMS_SIZE_SEQ;
+    ulMessageLength -= AIA_MSG_PARAMS_SIZE_SEQ;
+
+    lNbTokens = lParseJSMN( ( const char * )pucMessage, ulMessageLength, xJSMNTokens, aiaconfigJSMN_MAX_TOKENS );
+    configASSERT( lNbTokens >= 0 );
+
+    printJSONString_DEBUG( ( "DEBUG: RAW JSON message: ", pucMessage, 0, ulMessageLength ) );
+
+    pxJSMNToken = &xJSMNTokens[ AIA_MSGTOKENPOS_CAPABILITIES_CODE ];
+    configASSERT( AIA_MSGTOKENPOS_CAPABILITIES_CODE < lNbTokens );
+    if( xIsStringEqual( pucMessage + pxJSMNToken->start, pxJSMNToken->end - pxJSMNToken->start, "CAPABILITIES_ACCEPTED" ) == pdTRUE )
+    {
+        configPRINTF( ( "AIA has accepted the capabilities!\r\n" ) );
+        prvClientSetState( AIA_STATE_CAPABILITIES_ACCEPTED );
+    }
+    else
+    {
+        vPrintJSONString( "AIA has rejected the capabilities! Description: ", pucMessage, pxJSMNToken->start, pxJSMNToken->end );
+        prvClientSetState( AIA_STATE_CAPABILITIES_REJECTED );
+    }
+}
+
+static void prvProcessDirective( const uint8_t * pucMessage, uint32_t ulMessageLength )
+{
+    jsmntok_t xJSMNTokens[ aiaconfigJSMN_MAX_TOKENS ];
+    jsmntok_t * pxJSMNToken;
+    jsmntok_t * pxJSMNTokenEndMarker;
+    int32_t lNbTokens;
+    uint8_t ucNbDirectives;
+    uint8_t ucDirectiveTokenOffset;
+    uint8_t ucDirectiveTokenSize;
+    pucMessage += AIA_MSG_PARAMS_SIZE_SEQ;
+    ulMessageLength -= AIA_MSG_PARAMS_SIZE_SEQ;
+
+    lNbTokens = lParseJSMN( ( const char * )pucMessage, ulMessageLength, xJSMNTokens, aiaconfigJSMN_MAX_TOKENS );
+    configASSERT( lNbTokens >= 0 );
+
+    printJSONString_DEBUG( ( "DEBUG: RAW JSON message: ", pucMessage, 0, ulMessageLength ) );
+
+    /* directive
+     * One directive message may contain multiple directive objects, e.g.
+     *
+     * {"directives":[{"header":{"name":"CloseMicrophone","messageId":"42d7b012-e81f-410d-8d74-ec0e96626216"}},
+     *                {"header":{"name":"SetAttentionState","messageId":"e7332db8-308b-41d3-b9ae-3f40d164fff9"},"payload":{"state":"THINKING"}}]}
+     *
+     * {"directives":[{"header":{"name":"SetAttentionState","messageId":"d1c80e21-df0f-4695-b662-14f132c2cfd4"},"payload":{"state":"SPEAKING"}},
+     *                {"header":{"name":"OpenSpeaker","messageId":"18600d0d-1464-4936-9960-d7d7cbe398ba"},"payload":{"offset":0}}]}
+     */
+    configASSERT( AIA_MSGTOKENPOS_DIRECTIVE_ARRAY < lNbTokens );
+    ucNbDirectives = xJSMNTokens[ AIA_MSGTOKENPOS_DIRECTIVE_ARRAY ].size;
+    /* The token number offset of each directive object. The first one starts at index 3. */
+    ucDirectiveTokenOffset = 3;
+    ucDirectiveTokenSize = 0;
+    pxJSMNTokenEndMarker = xJSMNTokens + lNbTokens;
+    for( uint8_t i = 0; i < ucNbDirectives; i++ )
+    {
+        pxJSMNToken = &xJSMNTokens[ ucDirectiveTokenOffset ];
+        jsmntok_t * pxJSMNTokenTemp = &pxJSMNToken[ AIA_MSGTOKENPOS_DIRECTIVE_NAME ];
+        configASSERT( pxJSMNTokenTemp < pxJSMNTokenEndMarker );
+        const uint8_t * pucDirectiveName = pucMessage + pxJSMNTokenTemp->start;
+        size_t xDirectiveNameLength = pxJSMNTokenTemp->end - pxJSMNTokenTemp->start;
+
+        if( xIsDirective( pucDirectiveName, xDirectiveNameLength, "SetAttentionState" ) == pdTRUE )
+        {
+            prvClientHandleDirectiveSetAttentionState( pucMessage, pxJSMNToken, pxJSMNTokenEndMarker, &ucDirectiveTokenSize );
+        }
+        else if( xIsDirective( pucDirectiveName, xDirectiveNameLength, "OpenSpeaker" ) == pdTRUE )
+        {
+            prvClientHandleDirectiveOpenSpeaker( pucMessage, pxJSMNToken, pxJSMNTokenEndMarker, &ucDirectiveTokenSize );
+        }
+        else if( xIsDirective( pucDirectiveName, xDirectiveNameLength, "CloseSpeaker" ) == pdTRUE )
+        {
+            prvClientHandleDirectiveCloseSpeaker( pucMessage, pxJSMNToken, pxJSMNTokenEndMarker, &ucDirectiveTokenSize );
+        }
+        else if( xIsDirective( pucDirectiveName, xDirectiveNameLength, "OpenMicrophone" ) == pdTRUE )
+        {
+            prvClientHandleDirectiveOpenMicrophone( pucMessage, pxJSMNToken, pxJSMNTokenEndMarker, &ucDirectiveTokenSize );
+        }
+        else if( xIsDirective( pucDirectiveName, xDirectiveNameLength, "CloseMicrophone" ) == pdTRUE )
+        {
+            prvClientHandleDirectiveCloseMicrophone( pucMessage, pxJSMNToken, pxJSMNTokenEndMarker, &ucDirectiveTokenSize );
+        }
+        else if( xIsDirective( pucDirectiveName, xDirectiveNameLength, "SetVolume" ) == pdTRUE )
+        {
+            prvClientHandleDirectiveSetVolume( pucMessage, pxJSMNToken, pxJSMNTokenEndMarker, &ucDirectiveTokenSize );
+        }
+        ucDirectiveTokenOffset += ucDirectiveTokenSize;
+    }
+}
+
+static void prvClientHandleTopicDirective( const uint8_t * pucMessage, uint32_t ulMessageLength )
+{
+    uint32_t ulSequence;
+    uint32_t ulNextSequenceInBuffer;
+    BaseType_t xReturned;
+    AIABufferList_t * pxBufferList;
+    uint8_t * pucMessageCopy;
+    static uint32_t ulExpectSequence = 0;
+
+    ulSequence = *( uint32_t * )pucMessage;
+    configPRINTF_DEBUG( ( "DEBUG: /directive msg length %d seq %u\r\n", ulMessageLength, ulSequence ) );
+
+    pxBufferList = &AIAClient.xDirectiveBufferList;
+    if( ulSequence != ulExpectSequence )
+    {
+        /* When a message is received out of order, allocate a memory to store this message and put it into the list. */
+        pucMessageCopy = ( uint8_t * )pvPortMalloc( ulMessageLength );
+        configASSERT( pucMessageCopy != NULL );
+        memcpy( pucMessageCopy, pucMessage, ulMessageLength );
+        xReturned = xAIABufferListInsert( pxBufferList, pucMessageCopy, ulMessageLength );
+        configASSERT( xReturned == pdPASS );
+    }
+    else
+    {
+        prvProcessDirective( pucMessage, ulMessageLength );
+        do
+        {
+            ulExpectSequence++;
+            ulNextSequenceInBuffer = ulAIABufferListFirstSequence( pxBufferList );
+            if( ulExpectSequence == ulNextSequenceInBuffer )
+            {
+                /* When the first message in the list has the expected sequence number, pop it out and process it. */
+                ulMessageLength = xAIABufferListPopFirstMessage( pxBufferList, ( const void ** )&pucMessageCopy );
+                prvProcessDirective( pucMessageCopy, ulMessageLength );
+                vPortFree( pucMessageCopy );
+            }
+            else
+            {
+                break;
+            }
+        } while( 1 );
+    }
+}
+
+static void prvClientHandleDirectiveSetAttentionState( const uint8_t * pucMessage,
+                                                       const jsmntok_t * pxJSMNToken,
+                                                       const jsmntok_t * pxJSMNTokenEndMarker,
+                                                       uint8_t * pucDirectiveTokenSize )
+{
+    const uint8_t * pucState;
+    const jsmntok_t * pxJSMNTokenTemp;
+    size_t xStateLength;
+
+    *pucDirectiveTokenSize = AIA_MSGTOKENSIZE_SETATTENTIONSTATE;
+    pxJSMNTokenTemp = &pxJSMNToken[ AIA_MSGTOKENPOS_SETATTENTIONSTATE_STATE ];
+    configASSERT( pxJSMNTokenTemp < pxJSMNTokenEndMarker );
+    pucState = pucMessage + pxJSMNTokenTemp->start;
+    xStateLength = pxJSMNTokenTemp->end - pxJSMNTokenTemp->start;
+
+    prvClientClearState( AIA_STATE_ALEXA_MASK );
+    if( xIsStringEqual( pucState, xStateLength, "IDLE" ) == pdTRUE )
+    {
+        configPRINTF( ( "Switching to IDLE state.\r\n" ) );
+        prvClientSetState( AIA_STATE_ALEXA_IDLE );
+        vPlatformTouchButtonEnable();
+        vPlatformLEDOn();
+    }
+    else if( xIsStringEqual( pucState, xStateLength, "THINKING" ) == pdTRUE )
+    {
+        configPRINTF( ( "Switching to THINKING state.\r\n" ) );
+        prvClientSetState( AIA_STATE_ALEXA_THINKING );
+    }
+    else if( xIsStringEqual( pucState, xStateLength, "SPEAKING" ) == pdTRUE )
+    {
+        configPRINTF( ( "Switching to SPEAKING state.\r\n" ) );
+        prvClientSetState( AIA_STATE_ALEXA_SPEAKING );
+    }
+    else if( xIsStringEqual( pucState, xStateLength, "ALERTING" ) == pdTRUE )
+    {
+        configPRINTF( ( "Switching to ALERTING state.\r\n" ) );
+        prvClientSetState( AIA_STATE_ALEXA_ALERTING );
+    }
+
+    pxJSMNTokenTemp = &pxJSMNToken[ AIA_MSGTOKENPOS_SETATTENTIONSTATE_OFFSET - 1 ];
+    /* "offset" field is optional. It needs to be handled before changing the attention state, as it might unblock other tasks immediately. */
+    if( pxJSMNTokenTemp < pxJSMNTokenEndMarker &&
+            xIsStringEqual( pucMessage + pxJSMNTokenTemp->start, pxJSMNTokenTemp->end - pxJSMNTokenTemp->start, "offset" ) == pdTRUE )
+    {
+        configASSERT( pxJSMNTokenTemp + 1 < pxJSMNTokenEndMarker );
+        *pucDirectiveTokenSize += 2;
+        configPRINTF( ( "We are not handling offset in SetAttentionState yet!!!\r\n" ) );
+    }
+}
+
+static void prvClientHandleDirectiveOpenSpeaker( const uint8_t * pucMessage,
+                                                 const jsmntok_t * pxJSMNToken,
+                                                 const jsmntok_t * pxJSMNTokenEndMarker,
+                                                 uint8_t * pucDirectiveTokenSize )
+{
+    const jsmntok_t * pxJSMNTokenTemp;
+
+    *pucDirectiveTokenSize = AIA_MSGTOKENSIZE_OPENSPEAKER;
+    pxJSMNTokenTemp = &pxJSMNToken[ AIA_MSGTOKENPOS_OPENSPEAKER_OFFSET ];
+    configASSERT( pxJSMNTokenTemp < pxJSMNTokenEndMarker );
+    AIAClient.xSpeaker.ullOpenOffset = ullConvertJSONLong( pucMessage, pxJSMNTokenTemp->start, pxJSMNTokenTemp->end );
+    configPRINTF_DEBUG( ( "DEBUG: OpenSpeaker offset is %lu.\r\n", ( uint32_t )AIAClient.xSpeaker.ullOpenOffset ) );
+    prvClientSetState( AIA_STATE_OPENSPEAKER_RECEIVED );
+}
+
+static void prvClientHandleDirectiveCloseSpeaker( const uint8_t * pucMessage,
+                                                  const jsmntok_t * pxJSMNToken,
+                                                  const jsmntok_t * pxJSMNTokenEndMarker,
+                                                  uint8_t * pucDirectiveTokenSize )
+{
+    const jsmntok_t * pxJSMNTokenTemp;
+
+    *pucDirectiveTokenSize = AIA_MSGTOKENSIZE_CLOSESPEAKER;
+    pxJSMNTokenTemp = &pxJSMNToken[ AIA_MSGTOKENPOS_CLOSESPEAKER_OFFSET - 1 ];
+    if( pxJSMNTokenTemp < pxJSMNTokenEndMarker &&
+            xIsStringEqual( pucMessage + pxJSMNTokenTemp->start, pxJSMNTokenTemp->end - pxJSMNTokenTemp->start, "offset" ) == pdTRUE )
+    {
+        pxJSMNTokenTemp += 1;
+        configASSERT( pxJSMNTokenTemp < pxJSMNTokenEndMarker );
+        AIAClient.xSpeaker.ullCloseOffset = ullConvertJSONLong( pucMessage, pxJSMNTokenTemp->start, pxJSMNTokenTemp->end );
+        configPRINTF_DEBUG( ( "DEBUG: CloseSpeaker offset is %lu.\r\n", ( uint32_t )AIAClient.xSpeaker.ullCloseOffset ) );
+        *pucDirectiveTokenSize += 4;
+    }
+    else
+    {
+        configPRINTF_DEBUG( ( "DEBUG: CloseSpeaker, no offset\r\n" ) );
+        prvClientSetState( AIA_STATE_CLOSESPEAKERNOOFFSET_RECEIVED );
+    }
+}
+
+static void prvClientHandleDirectiveOpenMicrophone( const uint8_t * pucMessage,
+                                                    const jsmntok_t * pxJSMNToken,
+                                                    const jsmntok_t * pxJSMNTokenEndMarker,
+                                                    uint8_t * pucDirectiveTokenSize )
+{
+    const jsmntok_t * pxJSMNTokenTemp;
+
+    *pucDirectiveTokenSize = AIA_MSGTOKENSIZE_OPENMICROPHONE;
+    pxJSMNTokenTemp = &pxJSMNToken[ AIA_MSGTOKENPOS_INITIATOR - 1 ];
+
+    if( pxJSMNTokenTemp < pxJSMNTokenEndMarker &&
+            xIsStringEqual( pucMessage + pxJSMNTokenTemp->start, pxJSMNTokenTemp->end - pxJSMNTokenTemp->start, "initiator" ) == pdTRUE )
+    {
+        /* TODO: send the received initiator in the subsequent MicrophoneOpened event and adjust ucDirectiveTokenSize properly. */
+        configPRINTF_DEBUG( ( "DEBUG: Initiator received in OpenMicrophone directive!\r\n" ) );
+    }
+    else
+    {
+        AIAClient.pcInitiatorType = NULL;
+    }
+
+    xStreamBufferReset( AIAClient.xMicrophone.xMicBuffer );
+
+    prvClientOpenMicrophone();
+
+    /* Change the blink interval to 200ms in this case. */
+    vPlatformLEDBlink( 200 );
+}
+
+static void prvClientHandleDirectiveCloseMicrophone( const uint8_t * pucMessage,
+                                                     const jsmntok_t * pxJSMNToken,
+                                                     const jsmntok_t * pxJSMNTokenEndMarker,
+                                                     uint8_t * pucDirectiveTokenSize )
+{
+    *pucDirectiveTokenSize = AIA_MSGTOKENSIZE_CLOSEMICROPHONE;
+    configPRINTF_DEBUG( ( "DEBUG: CloseMicrophone is received.\r\n" ) );
+    prvClientCloseMicrophone();
+    vPlatformLEDOff();
+}
+
+static void prvClientHandleDirectiveSetVolume( const uint8_t * pucMessage,
+                                               const jsmntok_t * pxJSMNToken,
+                                               const jsmntok_t * pxJSMNTokenEndMarker,
+                                               uint8_t * pucDirectiveTokenSize )
+{
+    const jsmntok_t * pxJSMNTokenTemp;
+    AIAClient_SetVolume_t xSetVolume = { 0 };
+
+    *pucDirectiveTokenSize = AIA_MSGTOKENSIZE_SETVOLUME;
+    pxJSMNTokenTemp = &pxJSMNToken[ AIA_MSGTOKENPOS_SETVOLUME_VOLUME ];
+    configASSERT( pxJSMNTokenTemp < pxJSMNTokenEndMarker );
+    xSetVolume.ulVolume = ( uint32_t )ullConvertJSONLong( pucMessage, pxJSMNTokenTemp->start, pxJSMNTokenTemp->end );
+
+    pxJSMNTokenTemp = &pxJSMNToken[ AIA_MSGTOKENPOS_SETVOLUME_OFFSET - 1 ];
+    if( pxJSMNTokenTemp < pxJSMNTokenEndMarker &&
+            xIsStringEqual( pucMessage + pxJSMNTokenTemp->start, pxJSMNTokenTemp->end - pxJSMNTokenTemp->start, "offset" ) == pdTRUE )
+    {
+        pxJSMNTokenTemp += 1;
+        configASSERT( pxJSMNTokenTemp < pxJSMNTokenEndMarker );
+        xSetVolume.ullOffset = ullConvertJSONLong( pucMessage, pxJSMNTokenTemp->start, pxJSMNTokenTemp->end );
+        *pucDirectiveTokenSize += 2;
+    }
+    configPRINTF_DEBUG( ( "DEBUG: SetVolume is received to set volume to %u.\r\n", xSetVolume.ulVolume ) );
+    prvClientSetVolume( xSetVolume );
+}
+
+static void prvClientGeneralCallback( void * pvUserData, IotMqttCallbackParam_t * pxPublishParameters )
 {
     /* A provisional and very coarse locking block to ensure reentrancy of this callback function. */
     xSemaphoreTake( xGenericLock, portMAX_DELAY );
@@ -187,9 +728,9 @@ static void prvAIAGeneralCallback( void * pvUserData, IotMqttCallbackParam_t * p
     uint16_t usTopicNameLength = pxPublishParameters->u.message.info.topicNameLength;
 
     /* If the message is received on connection topic, no need for decryption. */
-    if( memcmp( pcTopicName, AIA_TOPIC_CONNECTION_SER, ( size_t )usTopicNameLength ) != 0 )
+    if( xIsTopic( pcTopicName, ( size_t )usTopicNameLength, AIA_TOPIC_CONNECTION_SER ) != pdTRUE )
     {
-        lMsgLen = AIA_CRYPTO_Decrypt( &AIAClient.xCrypto,
+        lMsgLen = lAIACryptoDecrypt( &AIAClient.xCrypto,
                                       ucAiaRecvMsg,
                                       pxPublishParameters->u.message.info.pPayload,
                                       pxPublishParameters->u.message.info.payloadLength );
@@ -197,13 +738,14 @@ static void prvAIAGeneralCallback( void * pvUserData, IotMqttCallbackParam_t * p
         {
             /* TODO: Should close the connection with a "MESSAGE_TAMPERED" disconnect code. */
             configPRINTF_DEBUG( ( "DEBUG: decrypted sequence number does not match!\r\n" ) );
-            goto aia_callback_exit;
+            goto client_callback_exit;
         }
         if( lMsgLen == eCryptoFailure )
         {
             configPRINTF( ( "Failed to decrypt received message!\r\n" ) );
-            goto aia_callback_exit;
+            goto client_callback_exit;
         }
+        pucMsgContent = ucAiaRecvMsg;
     }
     else
     {
@@ -211,386 +753,24 @@ static void prvAIAGeneralCallback( void * pvUserData, IotMqttCallbackParam_t * p
         lMsgLen = pxPublishParameters->u.message.info.payloadLength;
     }
 
-    uint32_t ulSequence = *( uint32_t * )ucAiaRecvMsg;
-    configPRINTF_DEBUG( ( "DEBUG: msg length %d seq %u\r\n", lMsgLen, ulSequence ) );
-
-    /* speaker */
-    if( memcmp( pcTopicName, AIA_TOPIC_SPEAKER, ( size_t )usTopicNameLength ) == 0 )
+    if( xIsTopic( pcTopicName, ( size_t )usTopicNameLength, AIA_TOPIC_CONNECTION_SER ) == pdTRUE )
     {
-        AIAClient_Speaker_t * pxSpeaker = &AIAClient.xSpeaker;
-        size_t xBytesRemainedBefore;
-        static uint32_t ulNextExpectedSeq;
-
-        if( ulSequence < ulNextExpectedSeq )
-        {
-            /* Skip the message of a smaller sequence number than expected.
-             * This is actually not consistent with AIA spec, which requires to replace
-             * the old message if a message with the same sequence number is received
-             * twice. In our current implementation using message buffer there's no way
-             * to arbitrarily replace data in the buffer.
-             * So far observation shows that the only circumstance that duplicate sequence
-             * messages are received is when overrun happens. Messages start with the sequence
-             * number specified in the event message will be resent by the server. And since
-             * the overrun event message won't take effect immediately, we will still receive
-             * messages before the server starts resending. Those which are within our
-             * resequencing range will be put into the resequencing buffer and pushed into
-             * the speaker buffer immediately following the expected message is resent and
-             * pushed.
-             * Sadly we cannot skip messages until the overrun message is received,because
-             * it can also happen that the resent messages are still out of order:)
-             * e.g.
-             *      Buffer overruns at: 42
-             *      Resequencing buffer size: 4
-             *                                               these 4 are ignored as they have been sent before
-             *                                                                  ^
-             *                                                             _____|______
-             *                                                             |    |  |  |
-             *      Message received on /speaker: 40 41 42 43 44 45 46 47 43 42 44 45 46 47 ...
-             *                                           ^                  ^
-             *                                           |                  |
-             *                            overrun message sent      43 is resent before 42
-             */
-        }
-        else if( ulSequence > ulNextExpectedSeq )
-        {
-            if( ulSequence > ulNextExpectedSeq + aiaconfigAIA_SPEAKER_RESEQUENCING )
-            {
-                if( bBufferOverrun == false )
-                {
-                    configPRINTF_DEBUG( ( "DEBUG: Unexpected sequence %u goes out of range while expecting %u!\r\n", ulSequence, ulNextExpectedSeq ) );
-                    prvClientDisconnectFromAIA();
-                    /* Signal the demo task. */
-                    if( xDemoTaskHandle != NULL )
-                    {
-                        xTaskNotifyGive( xDemoTaskHandle );
-                    }
-                }
-            }
-            else
-            {
-                uint8_t ucIndex;
-
-                /* Calculate where the message should be put in the resequencing buffer. */
-                ucIndex = ( ulSequence - ulNextExpectedSeq - 1 + xReseqBuffer.ucStartIndex ) % aiaconfigAIA_SPEAKER_RESEQUENCING;
-                memcpy( xReseqBuffer.xMessage[ ucIndex ].ucBuffer, ucAiaRecvMsg, lMsgLen );
-                xReseqBuffer.xMessage[ ucIndex ].ulLen = lMsgLen;
-            }
-        }
-        else
-        {
-            void * pvData;
-            size_t xDataLen;
-            bool bContinue;
-            AIABufferStateChanged_t xBufferStateChanged;
-
-            if( bBufferOverrun == true )
-            {
-                bBufferOverrun = false;
-
-                /* If microphone was opened during overrun state, which is the case when media playback
-                 * is interrupted by a new user request, drop the messages in the resequence buffer as
-                 * messages of the same sequence number but different contents will be sent by the server.
-                 */
-                if( bMicrophoneOpenedDuringOverrun == true )
-                {
-                    bMicrophoneOpenedDuringOverrun = false;
-                    for( int i = 0; i < aiaconfigAIA_SPEAKER_RESEQUENCING; i++ )
-                    {
-                       xReseqBuffer.xMessage[ i ].ulLen = 0;
-                    }
-                }
-            }
-
-            pvData = ( void * )ucAiaRecvMsg;
-            xDataLen = lMsgLen;
-
-            do
-            {
-                bContinue = false;
-
-                xBytesRemainedBefore = xStreamBufferBytesAvailable( ( StreamBufferHandle_t )pxSpeaker->xSpeakerBuffer );
-                if( xMessageBufferSend( pxSpeaker->xSpeakerBuffer, pvData, xDataLen, pdMS_TO_TICKS( 100 ) ) == 0 )
-                {
-                    /* According to the spec, overrun event should only be sent when the speaker is opened. If it's
-                     * closed, new data should be added to the buffer and old data dropped if the buffer runs out.
-                     * It is not handled accordingly here, as it requires extra logic but is only a corner case which
-                     * barely happens.
-                     */
-                    configPRINTF_DEBUG( ( "DEBUG: Speaker buffer overruns!\r\n" ) );
-                    bBufferOverrun = true;
-
-                    if( prvClientGetState( AIA_STATE_MICROPHONE_OPENED ) == pdTRUE )
-                    {
-                        bMicrophoneOpenedDuringOverrun = true;
-                    }
-
-                    /* Reset the resequence buffer as the following messages will be resent by AIA. */
-                    for( int i = 0; i < aiaconfigAIA_SPEAKER_RESEQUENCING; i++ )
-                    {
-                        xReseqBuffer.xMessage[ i ].ulLen = 0;
-                    }
-
-                    xBufferStateChanged.ulSequence = ulNextExpectedSeq;
-                    xBufferStateChanged.pcBufferStateStr = "OVERRUN";
-
-                    /* Only send this event while speaker is open. In case it is not, discard old data. */
-                    vTaskSuspendAll();
-
-                    if( prvClientGetState( AIA_STATE_SPEAKER_OPENED ) == pdTRUE )
-                    {
-                        xTaskResumeAll();
-                        prvClientBufferStateChanged( xBufferStateChanged );
-                    }
-                    else
-                    {
-                        do
-                        {
-                            xMessageBufferReceive( pxSpeaker->xSpeakerBuffer, ucDecodeTaskTemp, sizeof( ucDecodeTaskTemp ), 0 );
-                        } while( xMessageBufferSend( pxSpeaker->xSpeakerBuffer, pvData, xDataLen, 0 ) == 0 );
-                        ulNextExpectedSeq++;
-                        xTaskResumeAll();
-                    }
-
-                }
-                else
-                {
-                    /* Send the overrun warning only when speaker is still opened and
-                     * the buffer goes from a good state to a warning state.
-                     */
-                    if( prvClientGetState( AIA_STATE_SPEAKER_OPENED ) == pdTRUE &&
-                        xBytesRemainedBefore < pxSpeaker->ulSpeakerBufferOverrunWarning &&
-                        xStreamBufferBytesAvailable( ( StreamBufferHandle_t )pxSpeaker->xSpeakerBuffer ) >= pxSpeaker->ulSpeakerBufferOverrunWarning )
-                    {
-                        xBufferStateChanged.ulSequence = ulSequence;
-                        xBufferStateChanged.pcBufferStateStr = "OVERRUN_WARNING";
-                        prvClientBufferStateChanged( xBufferStateChanged );
-                    }
-
-                    /* If the next slot in the resequencing buffer has valid data,
-                     * prepare to push it to the speaker buffer.
-                     */
-                    uint8_t ucNextIndex = xReseqBuffer.ucStartIndex;
-                    if( xReseqBuffer.xMessage[ ucNextIndex ].ulLen != 0 )
-                    {
-                        pvData = xReseqBuffer.xMessage[ ucNextIndex ].ucBuffer;
-                        xDataLen = xReseqBuffer.xMessage[ ucNextIndex ].ulLen;
-                        xReseqBuffer.xMessage[ ucNextIndex ].ulLen = 0;
-                        bContinue = true;
-                    }
-
-                    xReseqBuffer.ucStartIndex = ( ucNextIndex + 1 ) % aiaconfigAIA_SPEAKER_RESEQUENCING;
-                    ulNextExpectedSeq++;
-                }
-            } while( bContinue );
-        }
-
-        goto aia_callback_exit;
+        prvClientHandleTopicConnectionService( pucMsgContent, ( uint32_t )lMsgLen );
+    }
+    else if( xIsTopic( pcTopicName, ( size_t )usTopicNameLength, AIA_TOPIC_SPEAKER ) == pdTRUE )
+    {
+        prvClientHandleTopicSpeaker( pucMsgContent, ( uint32_t )lMsgLen );
+    }
+    else if( xIsTopic( pcTopicName, ( size_t )usTopicNameLength, AIA_TOPIC_CAPABILITIES_ACK ) == pdTRUE )
+    {
+        prvClientHandleTopicCapabilitiesAck( pucMsgContent, ( uint32_t )lMsgLen );
+    }
+    else if( xIsTopic( pcTopicName, ( size_t )usTopicNameLength, AIA_TOPIC_DIRECTIVE ) == pdTRUE )
+    {
+        prvClientHandleTopicDirective( pucMsgContent, ( uint32_t )lMsgLen );
     }
 
-    /* Skip the sequence number if not /connection. */
-    if( memcmp( pcTopicName, AIA_TOPIC_CONNECTION_SER, ( size_t )usTopicNameLength ) != 0 )
-    {
-        pucMsgContent = ucAiaRecvMsg + AIA_MSG_PARAMS_SIZE_SEQ;
-        lMsgLen -= AIA_MSG_PARAMS_SIZE_SEQ;
-    }
-
-    int32_t lNbTokens;
-    jsmn_parser xJSMNParser;
-    jsmntok_t pxJSMNTokens[ aiaconfigJSMN_MAX_TOKENS ];
-    jsmn_init( &xJSMNParser );
-    lNbTokens = jsmn_parse( &xJSMNParser, ( const char * )pucMsgContent, lMsgLen, pxJSMNTokens, aiaconfigJSMN_MAX_TOKENS );
-    if( lNbTokens < 0 )
-    {
-        configPRINTF( ( "Failed to parse received message! Error: %d\r\n", lNbTokens ) );
-        goto aia_callback_exit;
-    }
-
-    printJSONString_DEBUG( ( "DEBUG: RAW JSON message: ", pucMsgContent, 0, lMsgLen ) );
-
-    /* Handle received message according to the topic. */
-    /* connection acknowledge */
-    if( memcmp( pcTopicName, AIA_TOPIC_CONNECTION_SER, ( size_t )usTopicNameLength ) == 0 )
-    {
-        /* Acknowledge and disconnect messages are both published to this topic. */
-        if( memcmp( pucMsgContent + pxJSMNTokens[ AIA_MSGTOKENPOS_CONNECTION_NAME ].start, "Acknowledge", strlen( "Acknowledge" ) ) == 0 )
-        {
-            if( memcmp( pucMsgContent + pxJSMNTokens[ AIA_MSGTOKENPOS_CONNECTION_CODE ].start, "CONNECTION_ESTABLISHED", strlen( "CONNECTION_ESTABLISHED" ) ) == 0 )
-            {
-                configPRINTF( ( "AIA service is connected!\r\n" ) );
-                prvClientSetState( AIA_STATE_CONNECTED );
-            }
-            else
-            {
-                prvPrintJSONString( "Failed to connect to AIA service. Code: ", pucMsgContent,
-                                    pxJSMNTokens[ AIA_MSGTOKENPOS_CONNECTION_CODE ].start, pxJSMNTokens[ AIA_MSGTOKENPOS_CONNECTION_CODE ].end );
-                prvClientSetState( AIA_STATE_CONNECTION_DENIED );
-            }
-        }
-        else if( memcmp( pucMsgContent + pxJSMNTokens[ AIA_MSGTOKENPOS_CONNECTION_NAME ].start, "Disconnect", strlen( "Disconnect" ) ) == 0 )
-        {
-            /* Ignore the message if the client is not connected. */
-            if( prvClientGetState( AIA_STATE_CONNECTED ) == pdTRUE )
-            {
-                prvPrintJSONString( "Disconnect from AIA service! Code: ", pucMsgContent,
-                                    pxJSMNTokens[ AIA_MSGTOKENPOS_DISCONNECTION_CODE ].start, pxJSMNTokens[ AIA_MSGTOKENPOS_DISCONNECTION_CODE ].end );
-
-                prvClientDisconnectFromAIA();
-                /* Signal the demo task. */
-                if( xDemoTaskHandle != NULL )
-                {
-                    xTaskNotifyGive( xDemoTaskHandle );
-                }
-            }
-        }
-    }
-    /* capabilities acknowledge */
-    else if( memcmp( pcTopicName, AIA_TOPIC_CAPABILITIES_ACK, ( size_t )usTopicNameLength ) == 0 )
-    {
-        if( memcmp( pucMsgContent + pxJSMNTokens[ AIA_MSGTOKENPOS_CAPABILITIES_CODE ].start, "CAPABILITIES_ACCEPTED", strlen( "CAPABILITIES_ACCEPTED" ) ) == 0 )
-        {
-            configPRINTF( ( "AIA has accepted the capabilities!\r\n" ) );
-            prvClientSetState( AIA_STATE_CAPABILITIES_ACCEPTED );
-        }
-        else
-        {
-            prvPrintJSONString( "AIA has rejected the capabilities! Description: ", pucMsgContent,
-                                pxJSMNTokens[ AIA_MSGTOKENPOS_CAPABILITIES_DESCRIPTION ].start, pxJSMNTokens[ AIA_MSGTOKENPOS_CAPABILITIES_DESCRIPTION ].end );
-            prvClientSetState( AIA_STATE_CAPABILITIES_REJECTED );
-        }
-    }
-    /* directive
-     * One directive message may contain multiple directive objects, e.g.
-     *
-     * {"directives":[{"header":{"name":"CloseMicrophone","messageId":"42d7b012-e81f-410d-8d74-ec0e96626216"}},
-     *                {"header":{"name":"SetAttentionState","messageId":"e7332db8-308b-41d3-b9ae-3f40d164fff9"},"payload":{"state":"THINKING"}}]}
-     *
-     * {"directives":[{"header":{"name":"SetAttentionState","messageId":"d1c80e21-df0f-4695-b662-14f132c2cfd4"},"payload":{"state":"SPEAKING"}},
-     *                {"header":{"name":"OpenSpeaker","messageId":"18600d0d-1464-4936-9960-d7d7cbe398ba"},"payload":{"offset":0}}]}
-     */
-    else if( memcmp( pcTopicName, AIA_TOPIC_DIRECTIVE, ( size_t )usTopicNameLength ) == 0 )
-    {
-        uint8_t ucNbDirectives = pxJSMNTokens[ AIA_MSGTOKENPOS_DIRECTIVE_ARRAY ].size;
-        /* The token number offset of each directive object. The first one starts at index 3. */
-        uint8_t ucDirectiveTokenOffset = 3;
-        uint8_t ucDirectiveTokenSize = 0;
-        for( uint8_t i = 0; i < ucNbDirectives; i++ )
-        {
-            const uint8_t * pucDirectiveName = pucMsgContent + pxJSMNTokens[ AIA_MSGTOKENPOS_DIRECTIVE_NAME + ucDirectiveTokenOffset ].start;
-            if( memcmp( pucDirectiveName, "SetAttentionState", strlen( "SetAttentionState" ) ) == 0 )
-            {
-                ucDirectiveTokenSize = AIA_MSGTOKENSIZE_SETATTENTIONSTATE;
-                /* "offset" field is optional. It needs to be handled before changing the attention state, as it might unblock other tasks immediately. */
-                if( AIA_MSGTOKENPOS_SETATTENTIONSTATE_OFFSET + ucDirectiveTokenOffset < lNbTokens &&
-                    memcmp( pucMsgContent + pxJSMNTokens[ AIA_MSGTOKENPOS_SETATTENTIONSTATE_OFFSET + ucDirectiveTokenOffset - 1].start, "offset", strlen("offset") ) == 0 )
-                {
-                    ucDirectiveTokenSize += 2;
-                    configPRINTF( ( "We are not handling offset in SetAttentionState yet!!!\r\n" ) );
-                }
-                const uint8_t * pucState = pucMsgContent + pxJSMNTokens[ AIA_MSGTOKENPOS_SETATTENTIONSTATE_STATE + ucDirectiveTokenOffset ].start;
-                prvClientClearState( AIA_STATE_ALEXA_MASK );
-
-                if( memcmp( pucState, "IDLE", strlen( "IDLE" ) ) == 0 )
-                {
-                    configPRINTF( ( "Switching to IDLE state.\r\n" ) );
-                    prvClientSetState( AIA_STATE_ALEXA_IDLE );
-                    vPlatformTouchButtonEnable();
-                    vPlatformLEDOn();
-                }
-                else if( memcmp( pucState, "THINKING", strlen( "THINKING" ) ) == 0 )
-                {
-                    configPRINTF( ( "Switching to THINKING state.\r\n" ) );
-                    prvClientSetState( AIA_STATE_ALEXA_THINKING );
-                }
-                else if( memcmp( pucState, "SPEAKING", strlen( "SPEAKING" ) ) == 0 )
-                {
-                    configPRINTF( ( "Switching to SPEAKING state.\r\n" ) );
-                    prvClientSetState( AIA_STATE_ALEXA_SPEAKING );
-                }
-                else if( memcmp( pucState, "ALERTING", strlen( "ALERTING" ) ) == 0 )
-                {
-                    configPRINTF( ( "Switching to ALERTING state.\r\n" ) );
-                    prvClientSetState( AIA_STATE_ALEXA_ALERTING );
-                }
-            }
-            else if( memcmp( pucDirectiveName, "OpenSpeaker", strlen( "OpenSpeaker" ) ) == 0 )
-            {
-                ucDirectiveTokenSize = AIA_MSGTOKENSIZE_OPENSPEAKER;
-                AIAClient.xSpeaker.ullOpenOffset = prvConvertJSONLong( pucMsgContent,
-                                                                       pxJSMNTokens[ AIA_MSGTOKENPOS_OPENSPEAKER_OFFSET + ucDirectiveTokenOffset ].start,
-                                                                       pxJSMNTokens[ AIA_MSGTOKENPOS_OPENSPEAKER_OFFSET + ucDirectiveTokenOffset ].end );
-                configPRINTF_DEBUG( ( "DEBUG: OpenSpeaker offset is %lu.\r\n", ( uint32_t )AIAClient.xSpeaker.ullOpenOffset ) );
-                prvClientSetState( AIA_STATE_OPENSPEAKER_RECEIVED );
-            }
-            else if( memcmp( pucDirectiveName, "CloseSpeaker", strlen( "CloseSpeaker" ) ) == 0 )
-            {
-                ucDirectiveTokenSize = AIA_MSGTOKENSIZE_CLOSESPEAKER;
-                if( AIA_MSGTOKENPOS_CLOSESPEAKER_OFFSET + ucDirectiveTokenOffset < lNbTokens &&
-                    memcmp( pucMsgContent + pxJSMNTokens[ AIA_MSGTOKENPOS_CLOSESPEAKER_OFFSET + ucDirectiveTokenOffset - 1].start, "offset", strlen("offset") ) == 0 ) {
-                    AIAClient.xSpeaker.ullCloseOffset = prvConvertJSONLong( pucMsgContent,
-                                                                            pxJSMNTokens[ AIA_MSGTOKENPOS_CLOSESPEAKER_OFFSET + ucDirectiveTokenOffset ].start,
-                                                                            pxJSMNTokens[ AIA_MSGTOKENPOS_CLOSESPEAKER_OFFSET + ucDirectiveTokenOffset ].end );
-                    configPRINTF_DEBUG( ( "DEBUG: CloseSpeaker offset is %lu.\r\n", ( uint32_t )AIAClient.xSpeaker.ullCloseOffset ) );
-                    ucDirectiveTokenSize += 4;
-                }
-                else
-                {
-                    configPRINTF_DEBUG( ( "DEBUG: CloseSpeaker, no offset\r\n" ) );
-                    prvClientSetState( AIA_STATE_CLOSESPEAKERNOOFFSET_RECEIVED );
-                }
-            }
-            else if( memcmp( pucDirectiveName, "OpenMicrophone", strlen( "OpenMicrophone" ) ) == 0 )
-            {
-                /* We don't handle timeoutInMilliseconds for now and no initiator is received so far. */
-                ucDirectiveTokenSize = AIA_MSGTOKENSIZE_OPENMICROPHONE;
-
-                if( AIA_MSGTOKENPOS_INITIATOR + ucDirectiveTokenOffset < lNbTokens &&
-                    memcmp( pucMsgContent + pxJSMNTokens[ AIA_MSGTOKENPOS_INITIATOR + ucDirectiveTokenOffset - 1 ].start, "initiator", strlen("initiator") ) == 0 )
-                {
-                    /* TODO: send the received initiator in the subsequent MicrophoneOpened event and adjust ucDirectiveTokenSize properly. */
-                    configPRINTF_DEBUG( ( "DEBUG: Initiator received in OpenMicrophone directive!\r\n" ) );
-                }
-                else
-                {
-                    AIAClient.pcInitiatorType = NULL;
-                }
-
-                xStreamBufferReset( AIAClient.xMicrophone.xMicBuffer );
-                prvClientOpenMicrophone();
-
-                /* Change the blink interval to 200ms in this case. */
-                vPlatformLEDBlink( 200 );
-            }
-            else if( memcmp( pucDirectiveName, "CloseMicrophone", strlen( "CloseMicrophone" ) ) == 0 )
-            {
-                ucDirectiveTokenSize = AIA_MSGTOKENSIZE_CLOSEMICROPHONE;
-                configPRINTF_DEBUG( ( "DEBUG: CloseMicrophone is received.\r\n" ) );
-                prvClientClearState( AIA_STATE_MICROPHONE_OPENED );
-                vPlatformMicrophoneClose();
-                vPlatformLEDOff();
-            }
-            else if( memcmp( pucDirectiveName, "SetVolume", strlen( "SetVolume" ) ) == 0 )
-            {
-                ucDirectiveTokenSize = AIA_MSGTOKENSIZE_SETVOLUME;
-                AIAClient_SetVolume_t xSetVolume = { 0 };
-                xSetVolume.ulVolume = ( uint32_t )prvConvertJSONLong( pucMsgContent,
-                                                                      pxJSMNTokens[ AIA_MSGTOKENPOS_SETVOLUME_VOLUME + ucDirectiveTokenOffset ].start,
-                                                                      pxJSMNTokens[ AIA_MSGTOKENPOS_SETVOLUME_VOLUME + ucDirectiveTokenOffset ].end );
-                if( AIA_MSGTOKENPOS_SETVOLUME_OFFSET + ucDirectiveTokenOffset < lNbTokens &&
-                    memcmp( pucMsgContent + pxJSMNTokens[ AIA_MSGTOKENPOS_SETVOLUME_OFFSET + ucDirectiveTokenOffset - 1].start, "offset", strlen("offset") ) == 0 )
-                {
-                    ucDirectiveTokenSize += 2;
-                    xSetVolume.ullOffset = prvConvertJSONLong( pucMsgContent,
-                                                               pxJSMNTokens[ AIA_MSGTOKENPOS_SETVOLUME_OFFSET + ucDirectiveTokenOffset ].start,
-                                                               pxJSMNTokens[ AIA_MSGTOKENPOS_SETVOLUME_OFFSET + ucDirectiveTokenOffset ].end );
-                }
-                configPRINTF_DEBUG( ( "DEBUG: SetVolume is received to set volume to %u.\r\n", xSetVolume.ulVolume ) );
-                prvClientSetVolume( xSetVolume );
-            }
-            ucDirectiveTokenOffset += ucDirectiveTokenSize;
-        }
-    }
-
-aia_callback_exit:
+client_callback_exit:
     /* Release the lock */
     xSemaphoreGive( xGenericLock );
 }
@@ -1073,7 +1253,7 @@ static BaseType_t prvClientSendEvent( AIAEvent_t event_type, void * parameters )
             SEND_EVENT_GOTO_FAIL( true ,"Unsupported event type!\r\n" );
     }
 
-    lEncryptedMessageLength = AIA_CRYPTO_Encrypt( &AIAClient.xCrypto, pcEncryptedMessage, pcEventMessage,
+    lEncryptedMessageLength = lAIACryptoEncrypt( &AIAClient.xCrypto, pcEncryptedMessage, pcEventMessage,
                                             strlen(pcEventMessage), ulSeq );
     SEND_EVENT_GOTO_FAIL( lEncryptedMessageLength < 0, "Failed to encrypt the event message");
 
@@ -1096,7 +1276,7 @@ static BaseType_t prvClientSubscribe( const char * pcTopic )
     xSubscription.topicFilterLength = strlen( pcTopic );
     xSubscription.qos = IOT_MQTT_QOS_0;
     xSubscription.callback.pCallbackContext = NULL;
-    xSubscription.callback.function = prvAIAGeneralCallback;    /* Subscribe to the topic with the general callback. */
+    xSubscription.callback.function = prvClientGeneralCallback;    /* Subscribe to the topic with the general callback. */
 
     xMqttStatus = IotMqtt_TimedSubscribe( AIAClient.xMqttConnection,
                                           &xSubscription,
@@ -1236,7 +1416,7 @@ static BaseType_t prvClientPublishCapabilities( void )
         return pdFAIL;
     }
 
-    lEncryptedMessageLength = AIA_CRYPTO_Encrypt( &AIAClient.xCrypto,
+    lEncryptedMessageLength = lAIACryptoEncrypt( &AIAClient.xCrypto,
                                                   pcEncryptedMessage,
                                                   pcCapabilitiesMessage,
                                                   strlen( pcCapabilitiesMessage ),
@@ -1327,6 +1507,16 @@ static BaseType_t prvClientOpenMicrophoneFromISR( BaseType_t * pxHigherPriorityT
 
     vPlatformLEDBlink( 500 );
     vPlatformMicrophoneOpen();
+
+    return xReturned;
+}
+
+static BaseType_t prvClientCloseMicrophone( void )
+{
+    BaseType_t xReturned;
+
+    vPlatformMicrophoneClose();
+    xReturned = prvClientClearState( AIA_STATE_MICROPHONE_OPENED );
 
     return xReturned;
 }
@@ -1427,7 +1617,7 @@ static void prvAIAStreamMicrophoneTask( void * pvParameters )
             xAudioStream->ullOffset = pxMicrophone->ullMicrophoneOffset;
             xAudioStream->xHeader.ulLength = xBytesReceived + sizeof( xAudioStream->ullOffset );
 
-            lEncryptedMessageLength = AIA_CRYPTO_Encrypt( &AIAClient.xCrypto,
+            lEncryptedMessageLength = lAIACryptoEncrypt( &AIAClient.xCrypto,
                                                           pcEncryptedMessage,
                                                           xAudioStream,
                                                           xAudioStream->xHeader.ulLength + sizeof( AIABinaryHeader_t ),
@@ -1496,8 +1686,12 @@ static void prvAIASpeakerTask( void * pvParameters )
 
         if( xMsgLen == 0 )
         {
-            configPRINTF_DEBUG( ( "DEBUG: No data in the speaker buffer!\r\n" ) );
-            if( prvClientGetState( AIA_STATE_CLOSESPEAKERNOOFFSET_RECEIVED ) == pdTRUE )
+            /* There is a chance that a CloseSpeaker directive is received after the last valid audio stream so add
+             * a check here to ensure the speaker can be properly closed.
+             */
+            if( ( pxSpeaker->ullCloseOffset > pxSpeaker->ullOpenOffset &&
+                    pxSpeaker->ullCloseOffset == pxSpeaker->ullOutputOffset ) ||
+                    ( prvClientGetState( AIA_STATE_CLOSESPEAKERNOOFFSET_RECEIVED ) == pdTRUE ) )
             {
                 /* In case that a CloseSpeaker directive with no offset is received, close the speaker
                  * at the current output offset.
@@ -1506,6 +1700,10 @@ static void prvAIASpeakerTask( void * pvParameters )
                 pxSpeaker->ullCloseOffset = pxSpeaker->ullOutputOffset;
 
                 prvClientCloseSpeaker( pxSpeaker->ullOutputOffset );
+            }
+            else
+            {
+                configPRINTF_DEBUG( ( "DEBUG: No data in the speaker buffer!\r\n" ) );
             }
             continue;
         }
@@ -1523,9 +1721,18 @@ static void prvAIASpeakerTask( void * pvParameters )
             {
                 uint32_t ulLenAudio = pxBinaryHeader->ulLength - sizeof( ullOffset );
                 uint32_t ulCount = pxBinaryHeader->ucCount + 1;
+                uint32_t ulOffsetLowWord, ulOffsetHighWord;
                 /* Assert if the chunk size received is not equal to the frame size we expect. */
                 configASSERT( ulLenAudio / ulCount == AIA_SPEAKER_DECODER_FRAME_SIZE );
-                ullOffset = *( uint64_t * )pucMsg;
+
+                /* Split the read of doubleword offset into two word accesses, as ARMv7-M/ARMv8-M does not support
+                * unaligned access for doubleword. Otherwise, to use a single doubleword access, two requirements
+                * must be met to ensure it is word-aligned: 1. ucDecodeTaskTemp is word-aligned. 2. the movement
+                * of pucMsg is in multiples of four.
+                */
+                ulOffsetLowWord = *( uint32_t * )pucMsg;
+                ulOffsetHighWord = *( uint32_t * )( pucMsg + sizeof( uint32_t ) );
+                ullOffset = ( uint64_t )ulOffsetHighWord << 32 | ulOffsetLowWord;
                 if( ullOffset >= pxSpeaker->ullOpenOffset )
                 {
                     if( prvClientGetState( AIA_STATE_OPENSPEAKER_RECEIVED ) == pdTRUE )
@@ -1708,7 +1915,7 @@ BaseType_t xClientInit( IotMqttConnection_t xMqttConnection )
     CLIENT_INIT_GOTO_FAIL( err != OPUS_OK, "Failed to create decoder!\r\n" );
 
     /* Intialize the context of AES-GCM */
-    AIACryptoErrorCode_t cryptoCode = AIA_CRYPTO_Init( &AIAClient.xCrypto, &xKeys );
+    AIACryptoErrorCode_t cryptoCode = xAIACryptoInit( &AIAClient.xCrypto, &xKeys );
     CLIENT_INIT_GOTO_FAIL( cryptoCode != eCryptoSuccess, "Failed to initialize AES-GCM!\r\n" );
 
     AIAClient.xState = xEventGroupCreate();
@@ -1722,6 +1929,9 @@ BaseType_t xClientInit( IotMqttConnection_t xMqttConnection )
 
     AIAClient.xSpeaker.xDecodeBuffer = xStreamBufferCreate( AIA_DECODER_BUFFER_TOTAL_SIZE, 0 );
     CLIENT_INIT_GOTO_FAIL( AIAClient.xSpeaker.xDecodeBuffer == NULL, "Failed to create xDecodeBuffer!\r\n" );
+
+    xReturned = xAIABufferListInitialize( &AIAClient.xDirectiveBufferList);
+    CLIENT_INIT_GOTO_FAIL( xReturned != pdPASS, "Failed to initialize xDirectiveBufferList!\r\n" );
 
     xReturned = xTaskCreate( prvAIAStreamMicrophoneTask,
                              "AIA_StreamMic",

@@ -66,7 +66,7 @@ typedef struct {
  * @return                  The length of the message to be sent on success. Negative
  *                          value on failure.
  */
-int32_t AIA_CRYPTO_Encrypt( AIACrypto_t * crypto, void * msg_buf, void * plaintext, uint32_t plaintext_len, uint32_t sequence );
+int32_t lAIACryptoEncrypt( AIACrypto_t * crypto, void * msg_buf, void * plaintext, uint32_t plaintext_len, uint32_t sequence );
 
 /**
  * @brief                       The AIA message decryption function using AES-GCM.
@@ -81,7 +81,7 @@ int32_t AIA_CRYPTO_Encrypt( AIACrypto_t * crypto, void * msg_buf, void * plainte
  *                              Negative value on failure including the length of the
  *                              decrypted sequence number!
  */
-int32_t AIA_CRYPTO_Decrypt( AIACrypto_t * crypto, void * msg_buf, const void * encrypted_msg, uint32_t encrypted_msg_len );
+int32_t lAIACryptoDecrypt( AIACrypto_t * crypto, void * msg_buf, const void * encrypted_msg, uint32_t encrypted_msg_len );
 
 /**
  * @brief                       The initialization function for AIA crypto context.
@@ -91,13 +91,13 @@ int32_t AIA_CRYPTO_Decrypt( AIACrypto_t * crypto, void * msg_buf, const void * e
  *
  * @return                      Status of initialization.
  */
-AIACryptoErrorCode_t AIA_CRYPTO_Init( AIACrypto_t * crypto, AIACryptoKeys_t * keys );
+AIACryptoErrorCode_t xAIACryptoInit( AIACrypto_t * crypto, AIACryptoKeys_t * keys );
 
 /**
  * @brief                       The function to destroy crypto context.
  *
  * @param[in] crypto            AIACrypto_t structure containing crypto info.
  */
-void AIA_CRYPTO_Destory( AIACrypto_t * crypto );
+void vAIACryptoDestroy( AIACrypto_t * crypto );
 
 #endif /* _AIA_CRYPTO_H_ */

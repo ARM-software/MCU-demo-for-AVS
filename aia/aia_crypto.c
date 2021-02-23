@@ -137,7 +137,7 @@ static AIACryptoErrorCode_t prvGenerateSharedSecret( AIACryptoKeys_t *keys )
     return eCryptoSuccess;
 }
 
-AIACryptoErrorCode_t AIA_CRYPTO_Init( AIACrypto_t *crypto, AIACryptoKeys_t *keys )
+AIACryptoErrorCode_t xAIACryptoInit( AIACrypto_t *crypto, AIACryptoKeys_t *keys )
 {
     int ret;
 
@@ -170,13 +170,13 @@ init_fail:
     return eCryptoFailure;
 }
 
-void AIA_CRYPTO_Destory( AIACrypto_t *crypto )
+void vAIACryptoDestroy( AIACrypto_t *crypto )
 {
     mbedtls_entropy_free( &crypto->entropy );
     mbedtls_ctr_drbg_free( &crypto->drbg );
 }
 
-int32_t AIA_CRYPTO_Encrypt( AIACrypto_t * crypto, void * msg_buf, void * plaintext, uint32_t plaintext_len, uint32_t sequence )
+int32_t lAIACryptoEncrypt( AIACrypto_t * crypto, void * msg_buf, void * plaintext, uint32_t plaintext_len, uint32_t sequence )
 {
     int32_t ret;
     size_t cryptotext_len;
@@ -230,7 +230,7 @@ encrypt_exit:
     return ret;
 }
 
-int32_t AIA_CRYPTO_Decrypt( AIACrypto_t * crypto,  void * msg_buf, const void * encrypted_msg, uint32_t encrypted_msg_len )
+int32_t lAIACryptoDecrypt( AIACrypto_t * crypto,  void * msg_buf, const void * encrypted_msg, uint32_t encrypted_msg_len )
 {
     int32_t ret;
     size_t decrypted_msg_len = 0;

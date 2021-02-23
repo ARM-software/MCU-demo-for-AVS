@@ -7063,7 +7063,7 @@ index 2ef799b0..d3b944bb 100644
  /* Default configuration for all demos. Individual demos can override these below */
  #define democonfigDEMO_STACKSIZE    ( configMINIMAL_STACK_SIZE * 8 )
 diff --git a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/config_files/iot_config.h b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/config_files/iot_config.h
-index 9a5ff97e..ef8ca040 100644
+index 9a5ff97e..dae9a101 100644
 --- a/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/config_files/iot_config.h
 +++ b/vendors/cypress/boards/CY8CPROTO_062_4343W/aws_demos/config_files/iot_config.h
 @@ -49,8 +49,11 @@
@@ -7072,7 +7072,7 @@ index 9a5ff97e..ef8ca040 100644
  
 -/* Platform thread priority. */
  #define IOT_THREAD_DEFAULT_PRIORITY             5
-+#define IOT_THREAD_DEFAULT_STACK_SIZE           ( configMINIMAL_STACK_SIZE * 6 )
++#define IOT_THREAD_DEFAULT_STACK_SIZE           ( configMINIMAL_STACK_SIZE * 8 )
 +
 +#define IOT_NETWORK_RECEIVE_TASK_PRIORITY       4
 +#define IOT_NETWORK_RECEIVE_TASK_STACK_SIZE     ( configMINIMAL_STACK_SIZE * 4 )

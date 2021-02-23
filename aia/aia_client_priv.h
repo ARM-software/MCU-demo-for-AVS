@@ -36,6 +36,9 @@
 #include "aia_client_config.h"
 #include "aia_client.h"
 #include "aia_crypto.h"
+#include "aia_platform.h"
+#include "aia_utils.h"
+#include "aia_bufferlist.h"
 
 #include "opus.h"
 
@@ -245,10 +248,11 @@ typedef struct {
     AIAClient_Wakeword_t xWakeword;
     AIAClient_Microphone_t xMicrophone;
     AIACrypto_t xCrypto;
+    AIABufferList_t xDirectiveBufferList;
 } AIAClient_t;
 
 #ifdef DEBUG
-#define printJSONString_DEBUG( X )          prvPrintJSONString X
+#define printJSONString_DEBUG( X )          vPrintJSONString X
 #else
 #define printJSONString_DEBUG( X )
 #endif
